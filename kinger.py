@@ -4,6 +4,8 @@ from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     CallbackQueryHandler, filters, ContextTypes
 )
+import subprocess
+import tempfile
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = 7089083244  # вставь свой ID
@@ -192,14 +194,45 @@ async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
     file = update.message.video or update.message.video_note or update.message.document
     if not file: return
 
+    await update.message.reply_text("⏳ Конвертирую в кружок...")
+
     file_obj = await context.bot.get_file(file.file_id)
     file_bytes = await file_obj.download_as_bytearray()
 
-    await context.bot.send_video_note(
-        chat_id=state["active_chat"],
-        video_note=bytes(file_bytes)
-    )
-    await update.message.reply_text("Кружок отправлен ✅")
+    # Сохраняем входящее видео во временный файл
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_in:
+        tmp_in.write(file_bytes)
+        tmp_in_path = tmp_in.name
+
+    tmp_out_path = tmp_in_path + "_circle.mp4"
+
+    try:
+        # Конвертируем: квадратное, 360x360, макс 60 сек
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-i", tmp_in_path,
+            "-t", "60",
+            "-vf", "crop=min(iw\\,ih):min(iw\\,ih),scale=360:360",
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            tmp_out_path
+        ], check=True, capture_output=True)
+
+        with open(tmp_out_path, "rb") as f:
+            video_data = f.read()
+
+        await context.bot.send_video_note(
+            chat_id=state["active_chat"],
+            video_note=video_data
+        )
+        await update.message.reply_text("Кружок отправлен ✅")
+
+    except subprocess.CalledProcessError as e:
+        await update.message.reply_text(f"Ошибка конвертации: {e.stderr.decode()}")
+    finally:
+        os.unlink(tmp_in_path)
+        if os.path.exists(tmp_out_path):
+            os.unlink(tmp_out_path)
 
 # =================== ВХОДЯЩИЕ В ГРУППАХ ===================
 
